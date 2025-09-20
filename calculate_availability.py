@@ -41,8 +41,8 @@ def apply_coloring(excel_file, col_name='Availability'):
     except Exception as e:
         logging.error(f"Error coloring {excel_file}: {e}")
 
-def calculate_availability(df, level, formula='A', threshold=0.05):
-    """Core availability calc for any level."""
+def calculate_availability(df, level, formula='A', irradiance_threshold=0.05, power_threshold=0.0):
+    """Core availability calc for any level with customizable power threshold."""
     if df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -69,10 +69,11 @@ def calculate_availability(df, level, formula='A', threshold=0.05):
         logging.error(f"Missing required columns: {power_col} or {rad_col}")
         return pd.DataFrame(), pd.DataFrame()
 
-    df['Num'] = ((df[rad_col] > threshold) & (df[power_col] > 0)).astype(int)
-    df['Den'] = (df[rad_col] > threshold).astype(int)
-    df['Act_Wt'] = np.where((df[rad_col] > threshold) & (df[power_col] > 0), df[rad_col], 0)
-    df['Pot_Wt'] = np.where(df[rad_col] > threshold, df[rad_col], 0)
+    # Use power_threshold instead of hardcoded power > 0
+    df['Num'] = ((df[rad_col] > irradiance_threshold) & (df[power_col] > power_threshold)).astype(int)
+    df['Den'] = (df[rad_col] > irradiance_threshold).astype(int)
+    df['Act_Wt'] = np.where((df[rad_col] > irradiance_threshold) & (df[power_col] > power_threshold), df[rad_col], 0)
+    df['Pot_Wt'] = np.where(df[rad_col] > irradiance_threshold, df[rad_col], 0)
 
     group_cols = ['Date']
     if id_col:
@@ -119,6 +120,7 @@ def main():
     parser.add_argument('--connection_string', default='mongodb://110.39.23.106:27023/')
     parser.add_argument('--formula', default='A', choices=['A', 'B'])
     parser.add_argument('--irradiance_threshold', type=float, default=0.05)
+    parser.add_argument('--power_threshold', type=float, default=0.0, help="Power threshold for availability calculation (default: 0.0)")
     parser.add_argument('--output_excel', default=None, help="Output Excel file (default: {plant}_{level}_{formula}_availability.xlsx)")
 
     args = parser.parse_args()
@@ -133,7 +135,7 @@ def main():
             plant_part = args.plant_name.replace(' ', '_')
         args.output_excel = f"{plant_part}_{args.level}_{args.formula}_availability.xlsx"
 
-    logging.info(f"Starting calc for {args.level} | Plant(s): {args.plant_name} | Inverter(s): {args.inverter_sn} | MPPT(s): {args.mppt_id} | String(s): {args.string_id} | Formula: {args.formula} | Output: {args.output_excel}")
+    logging.info(f"Starting calc for {args.level} | Plant(s): {args.plant_name} | Inverter(s): {args.inverter_sn} | MPPT(s): {args.mppt_id} | String(s): {args.string_id} | Formula: {args.formula} | Irradiance Threshold: {args.irradiance_threshold} | Power Threshold: {args.power_threshold} | Output: {args.output_excel}")
 
     if args.plant_name.lower() == 'all':
         plants = get_plant_names(args.connection_string)
@@ -170,7 +172,7 @@ def main():
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
 
-        daily, debug = calculate_availability(df, args.level, args.formula, args.irradiance_threshold)
+        daily, debug = calculate_availability(df, args.level, args.formula, args.irradiance_threshold, args.power_threshold)
         if 'Plant' not in daily.columns:
             daily.insert(0, 'Plant', plant_display)
         all_dfs.append(daily)
