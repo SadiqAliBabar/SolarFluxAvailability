@@ -41,6 +41,7 @@ def apply_coloring(excel_file, col_name='Availability'):
     except Exception as e:
         logging.error(f"Error coloring {excel_file}: {e}")
 
+
 def calculate_availability(df, level, formula='A', irradiance_threshold=0.05, power_threshold=0.0):
     """Core availability calc for any level with customizable power threshold."""
     if df.empty:
@@ -53,6 +54,7 @@ def calculate_availability(df, level, formula='A', irradiance_threshold=0.05, po
                  'mppt_Power' if level == 'mppt' else
                  'P_abd')  # Use P_abd for string level
     rad_col = 'dataItemMap.radiation_intensity' if level == 'plant' else 'radiation_intensity'
+
     id_col = ('sn' if level == 'inverter' else
               ['sn', 'mpptId'] if level == 'mppt' else
               ['sn', 'MPPT', 'Strings'] if level == 'string' else
@@ -68,6 +70,16 @@ def calculate_availability(df, level, formula='A', irradiance_threshold=0.05, po
     if power_col not in df.columns or rad_col not in df.columns:
         logging.error(f"Missing required columns: {power_col} or {rad_col}")
         return pd.DataFrame(), pd.DataFrame()
+
+    # --- Convert radiation intensity kW/m² → W/m² if needed ---
+    # If values look like < 5 (typical kW/m² range), convert
+    if df[rad_col].max(skipna=True) <= 5:
+        logging.info(f"Converting {rad_col} from kW/m² → W/m²")
+        df[rad_col] = df[rad_col] * 1000
+        # Convert irradiance threshold too
+        if irradiance_threshold < 5:
+            irradiance_threshold = irradiance_threshold * 1000
+            logging.info(f"Updated irradiance_threshold → {irradiance_threshold} W/m²")
 
     # Use power_threshold instead of hardcoded power > 0
     df['Num'] = ((df[rad_col] > irradiance_threshold) & (df[power_col] > power_threshold)).astype(int)
@@ -89,7 +101,8 @@ def calculate_availability(df, level, formula='A', irradiance_threshold=0.05, po
     }).reset_index()
 
     if formula == 'A':
-        daily['Availability'] = np.round((daily['Num'] / daily['Den'].replace(0, np.nan)) * 100, 2).fillna('Data Unavailable')
+        daily['Availability'] = np.round((daily['Num'] / daily['Den'].replace(0, np.nan)) * 100, 2).fillna(
+            'Data Unavailable')
         if level == 'mppt':
             daily = daily[['Date', 'Plant', 'sn', 'mpptId', 'Num', 'Den', 'Availability']]
         elif level == 'string':
@@ -97,7 +110,8 @@ def calculate_availability(df, level, formula='A', irradiance_threshold=0.05, po
         else:
             daily = daily[group_cols + ['Num', 'Den', 'Availability']]
     else:  # B
-        daily['Availability'] = np.round((daily['Act_Wt'] / daily['Pot_Wt'].replace(0, np.nan)) * 100, 2).fillna('Data Unavailable')
+        daily['Availability'] = np.round((daily['Act_Wt'] / daily['Pot_Wt'].replace(0, np.nan)) * 100, 2).fillna(
+            'Data Unavailable')
         if level == 'mppt':
             daily = daily[['Date', 'Plant', 'sn', 'mpptId', 'Act_Wt', 'Pot_Wt', 'Availability']]
         elif level == 'string':
@@ -105,8 +119,11 @@ def calculate_availability(df, level, formula='A', irradiance_threshold=0.05, po
         else:
             daily = daily[group_cols + ['Act_Wt', 'Pot_Wt', 'Availability']]
 
-    debug_df = df[['Plant', 'timestamp', power_col, rad_col, 'Num', 'Den', 'Act_Wt', 'Pot_Wt']] if 'Plant' in df.columns else df[['timestamp', power_col, rad_col, 'Num', 'Den', 'Act_Wt', 'Pot_Wt']]
+    debug_df = df[
+        ['Plant', 'timestamp', power_col, rad_col, 'Num', 'Den', 'Act_Wt', 'Pot_Wt']] if 'Plant' in df.columns else df[
+        ['timestamp', power_col, rad_col, 'Num', 'Den', 'Act_Wt', 'Pot_Wt']]
     return daily, debug_df
+
 
 def main():
     parser = argparse.ArgumentParser(description="Calculate solar availability.")
