@@ -52,7 +52,7 @@ def calculate_availability(df, level, formula='A', irradiance_threshold=0.05, po
     power_col = ('dataItemMap.inverter_power' if level == 'plant' else
                  'InverterPower' if level == 'inverter' else
                  'mppt_Power' if level == 'mppt' else
-                 'P_abd')  # Use P_abd for string level
+                 'P_abd')
     rad_col = 'dataItemMap.radiation_intensity' if level == 'plant' else 'radiation_intensity'
 
     id_col = ('sn' if level == 'inverter' else
@@ -66,17 +66,14 @@ def calculate_availability(df, level, formula='A', irradiance_threshold=0.05, po
     if level == 'string':
         df = df[df['String_Configured'] == 1]
 
-    # Ensure required columns exist
     if power_col not in df.columns or rad_col not in df.columns:
         logging.error(f"Missing required columns: {power_col} or {rad_col}")
         return pd.DataFrame(), pd.DataFrame()
 
     # --- Convert radiation intensity kW/m² → W/m² if needed ---
-    # If values look like < 5 (typical kW/m² range), convert
     if df[rad_col].max(skipna=True) <= 5:
         logging.info(f"Converting {rad_col} from kW/m² → W/m²")
         df[rad_col] = df[rad_col] * 1000
-        # Convert irradiance threshold too
         if irradiance_threshold < 5:
             irradiance_threshold = irradiance_threshold * 1000
             logging.info(f"Updated irradiance_threshold → {irradiance_threshold} W/m²")
@@ -86,6 +83,9 @@ def calculate_availability(df, level, formula='A', irradiance_threshold=0.05, po
     df['Den'] = (df[rad_col] > irradiance_threshold).astype(int)
     df['Act_Wt'] = np.where((df[rad_col] > irradiance_threshold) & (df[power_col] > power_threshold), df[rad_col], 0)
     df['Pot_Wt'] = np.where(df[rad_col] > irradiance_threshold, df[rad_col], 0)
+
+    # --- NEW: Count valid (non-null) radiation data points ---
+    df['ValidRadPoints'] = (~df[rad_col].isnull()).astype(int)
 
     group_cols = ['Date']
     if id_col:
@@ -97,21 +97,35 @@ def calculate_availability(df, level, formula='A', irradiance_threshold=0.05, po
         group_cols.append('Plant')
 
     daily = df.groupby(group_cols).agg({
-        'Num': 'sum', 'Den': 'sum', 'Act_Wt': 'sum', 'Pot_Wt': 'sum'
+        'Num': 'sum',
+        'Den': 'sum',
+        'Act_Wt': 'sum',
+        'Pot_Wt': 'sum',
+        'ValidRadPoints': 'sum' # --- NEW: Aggregate the count of valid radiation data points
     }).reset_index()
 
     if formula == 'A':
-        daily['Availability'] = np.round((daily['Num'] / daily['Den'].replace(0, np.nan)) * 100, 2).fillna(
-            'Data Unavailable')
+        daily['Availability'] = np.where(
+            # Condition for "Data Unavailable": No valid radiation points found.
+            daily['ValidRadPoints'] == 0,
+            'Data Unavailable',
+            # For all other cases, calculate the availability. This handles both 0% and >0% cases.
+            np.round((daily['Num'] / daily['Den'].replace(0, np.nan)) * 100, 2).fillna(0)
+        )
         if level == 'mppt':
             daily = daily[['Date', 'Plant', 'sn', 'mpptId', 'Num', 'Den', 'Availability']]
         elif level == 'string':
             daily = daily[['Date', 'Plant', 'sn', 'MPPT', 'Strings', 'Num', 'Den', 'Availability']]
         else:
             daily = daily[group_cols + ['Num', 'Den', 'Availability']]
-    else:  # B
-        daily['Availability'] = np.round((daily['Act_Wt'] / daily['Pot_Wt'].replace(0, np.nan)) * 100, 2).fillna(
-            'Data Unavailable')
+    else:  # Formula B
+        daily['Availability'] = np.where(
+            # Condition for "Data Unavailable": No valid radiation points found.
+            daily['ValidRadPoints'] == 0,
+            'Data Unavailable',
+            # For all other cases, calculate the availability.
+            np.round((daily['Act_Wt'] / daily['Pot_Wt'].replace(0, np.nan)) * 100, 2).fillna(0)
+        )
         if level == 'mppt':
             daily = daily[['Date', 'Plant', 'sn', 'mpptId', 'Act_Wt', 'Pot_Wt', 'Availability']]
         elif level == 'string':
@@ -119,6 +133,7 @@ def calculate_availability(df, level, formula='A', irradiance_threshold=0.05, po
         else:
             daily = daily[group_cols + ['Act_Wt', 'Pot_Wt', 'Availability']]
 
+    # Retain the original debug_df for debugging purposes if needed
     debug_df = df[
         ['Plant', 'timestamp', power_col, rad_col, 'Num', 'Den', 'Act_Wt', 'Pot_Wt']] if 'Plant' in df.columns else df[
         ['timestamp', power_col, rad_col, 'Num', 'Den', 'Act_Wt', 'Pot_Wt']]
